@@ -521,7 +521,9 @@ export default function (pi: ExtensionAPI) {
     try {
       config = JSON.parse(await readFile(join(ctx.cwd, ".mcp.json"), "utf8")) as McpConfig;
     } catch (error) {
-      console.error(`[mcp-bridge] Could not load .mcp.json: ${String(error)}`);
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        console.error(`[mcp-bridge] Could not load .mcp.json: ${String(error)}`);
+      }
       return;
     }
     if (!isRecord(config.mcpServers ?? {})) {

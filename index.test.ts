@@ -92,6 +92,24 @@ test("loads stdio tools and /mcp disables then reconnects a server", async () =>
   }
 });
 
+test("does nothing when .mcp.json is absent", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-mcp-test-"));
+  const pi = createPi();
+  const originalError = console.error;
+  const errors: unknown[][] = [];
+  console.error = (...args: unknown[]) => errors.push(args);
+  extension(pi as any);
+  try {
+    await start(pi, cwd);
+    expect(pi.tools).toEqual([]);
+    expect(errors).toEqual([]);
+  } finally {
+    console.error = originalError;
+    await stop(pi);
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("rejects ambiguous server transport configuration", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-mcp-test-"));
   const pi = createPi();

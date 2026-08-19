@@ -1,6 +1,6 @@
 {
   "name": "@nicbet/pi-mcp-extension",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Expose stdio and Streamable HTTP MCP servers from .mcp.json as Pi tools",
   "license": "MIT",
   "repository": {
@@ -17,6 +17,7 @@
   "files": [
     "index.ts",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "type": "module",
