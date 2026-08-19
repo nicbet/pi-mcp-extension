@@ -27,6 +27,13 @@ type McpClient = {
   callTool(name: string, args: unknown, signal?: AbortSignal): Promise<unknown>;
   close(): void;
 };
+type ManagedServer = {
+  config: ServerConfig;
+  cwd: string;
+  client?: McpClient;
+  toolNames: string[];
+  enabled: boolean;
+};
 type McpConfig = { mcpServers?: Record<string, unknown> };
 type McpTool = { name: string; description?: string; inputSchema: Record<string, unknown> };
 type JsonRpcResponse = { id?: number; result?: unknown; error?: { message?: string } };
@@ -63,7 +70,12 @@ function parseServerConfig(value: unknown): ServerConfig {
   if (hasCommand === hasUrl) throw new Error("server must define exactly one of command (stdio) or url (HTTP)");
   if (value.cwd !== undefined && typeof value.cwd !== "string") throw new Error("server cwd must be a string");
   const requestTimeoutMs = value.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
-  if (typeof requestTimeoutMs !== "number" || !Number.isInteger(requestTimeoutMs) || requestTimeoutMs < 1_000 || requestTimeoutMs > MAX_REQUEST_TIMEOUT_MS) {
+  if (
+    typeof requestTimeoutMs !== "number" ||
+    !Number.isInteger(requestTimeoutMs) ||
+    requestTimeoutMs < 1_000 ||
+    requestTimeoutMs > MAX_REQUEST_TIMEOUT_MS
+  ) {
     throw new Error(`requestTimeoutMs must be an integer between 1000 and ${MAX_REQUEST_TIMEOUT_MS}`);
   }
   const base: BaseServerConfig = {
@@ -97,7 +109,8 @@ function childEnvironment(server: StdioServerConfig): Record<string, string> {
 }
 
 function parseMcpTools(result: unknown): McpTool[] {
-  if (!isRecord(result) || !Array.isArray(result.tools)) throw new Error("MCP server returned an invalid tools/list response");
+  if (!isRecord(result) || !Array.isArray(result.tools))
+    throw new Error("MCP server returned an invalid tools/list response");
   return result.tools.map((tool) => {
     if (!isRecord(tool) || typeof tool.name !== "string" || !tool.name || !isRecord(tool.inputSchema)) {
       throw new Error("MCP server returned an invalid tool definition");
@@ -108,7 +121,11 @@ function parseMcpTools(result: unknown): McpTool[] {
     if (typeof tool.description === "string" && tool.description.length > MAX_TOOL_DESCRIPTION_LENGTH) {
       throw new Error("MCP server returned an oversized tool description");
     }
-    return { name: tool.name, description: typeof tool.description === "string" ? tool.description : undefined, inputSchema: tool.inputSchema };
+    return {
+      name: tool.name,
+      description: typeof tool.description === "string" ? tool.description : undefined,
+      inputSchema: tool.inputSchema,
+    };
   });
 }
 
@@ -118,7 +135,10 @@ class StdioMcpClient {
   private nextId = 1;
   private pending = new Map<number, PendingRequest>();
 
-  constructor(private readonly server: StdioServerConfig, private readonly cwd: string) {}
+  constructor(
+    private readonly server: StdioServerConfig,
+    private readonly cwd: string,
+  ) {}
 
   async connect() {
     this.process = spawn(this.server.command, this.server.args, {
@@ -132,7 +152,9 @@ class StdioMcpClient {
     // Consume stderr so a noisy server cannot block, but do not leak its output to Pi logs.
     this.process.stderr.resume();
     this.process.on("error", (error) => this.failAll(error));
-    this.process.on("exit", (code, signal) => this.failAll(new Error(`MCP server exited (${code ?? signal ?? "unknown"})`)));
+    this.process.on("exit", (code, signal) =>
+      this.failAll(new Error(`MCP server exited (${code ?? signal ?? "unknown"})`)),
+    );
 
     await this.request("initialize", {
       protocolVersion: "2024-11-05",
@@ -154,7 +176,12 @@ class StdioMcpClient {
     const child = this.process;
     if (!child || child.killed) return;
     if (process.platform !== "win32" && child.pid) {
-      try { process.kill(-child.pid, "SIGTERM"); return; } catch { /* fall through */ }
+      try {
+        process.kill(-child.pid, "SIGTERM");
+        return;
+      } catch {
+        /* fall through */
+      }
     }
     child.kill();
   }
@@ -170,12 +197,22 @@ class StdioMcpClient {
         pending.cleanup();
         callback(value);
       };
-      const timeout = setTimeout(() => finish(reject, new Error(`MCP ${method} request timed out`)), this.server.requestTimeoutMs);
+      const timeout = setTimeout(
+        () => finish(reject, new Error(`MCP ${method} request timed out`)),
+        this.server.requestTimeoutMs,
+      );
       const abort = () => {
         this.notify("notifications/cancelled", { requestId: id, reason: "Client cancelled the request" });
         finish(reject, new Error("MCP request cancelled"));
       };
-      this.pending.set(id, { resolve, reject, cleanup: () => { clearTimeout(timeout); signal?.removeEventListener("abort", abort); } });
+      this.pending.set(id, {
+        resolve,
+        reject,
+        cleanup: () => {
+          clearTimeout(timeout);
+          signal?.removeEventListener("abort", abort);
+        },
+      });
       signal?.addEventListener("abort", abort, { once: true });
       try {
         this.send({ jsonrpc: "2.0", id, method, params });
@@ -186,7 +223,11 @@ class StdioMcpClient {
   }
 
   private notify(method: string, params: unknown) {
-    try { this.send({ jsonrpc: "2.0", method, params }); } catch { /* Server has already stopped. */ }
+    try {
+      this.send({ jsonrpc: "2.0", method, params });
+    } catch {
+      /* Server has already stopped. */
+    }
   }
 
   private send(message: unknown) {
@@ -206,7 +247,11 @@ class StdioMcpClient {
     for (const line of lines) {
       if (!line.trim()) continue;
       let response: JsonRpcResponse;
-      try { response = JSON.parse(line) as JsonRpcResponse; } catch { continue; }
+      try {
+        response = JSON.parse(line) as JsonRpcResponse;
+      } catch {
+        continue;
+      }
       if (typeof response.id !== "number") continue;
       const pending = this.pending.get(response.id);
       if (!pending) continue;
@@ -250,7 +295,9 @@ class HttpMcpClient implements McpClient {
     return this.request("tools/call", { name, arguments: args }, signal);
   }
 
-  close() { this.closed = true; }
+  close() {
+    this.closed = true;
+  }
 
   private async notify(method: string, params: unknown) {
     await this.request(method, params, undefined, false);
@@ -261,7 +308,10 @@ class HttpMcpClient implements McpClient {
     if (signal?.aborted) throw new Error("MCP request cancelled");
     const id = includeId ? this.nextId++ : undefined;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(new Error(`MCP ${method} request timed out`)), this.server.requestTimeoutMs);
+    const timeout = setTimeout(
+      () => controller.abort(new Error(`MCP ${method} request timed out`)),
+      this.server.requestTimeoutMs,
+    );
     const abort = () => controller.abort(new Error("MCP request cancelled"));
     signal?.addEventListener("abort", abort, { once: true });
     try {
@@ -283,7 +333,8 @@ class HttpMcpClient implements McpClient {
       if (!body.trim()) return undefined;
       const rpc = this.parseResponse(body, response.headers.get("content-type") ?? "", id);
       if (!isRecord(rpc)) throw new Error("MCP server returned an invalid JSON-RPC response");
-      if (isRecord(rpc.error)) throw new Error(typeof rpc.error.message === "string" ? rpc.error.message : "MCP request failed");
+      if (isRecord(rpc.error))
+        throw new Error(typeof rpc.error.message === "string" ? rpc.error.message : "MCP request failed");
       return rpc.result;
     } catch (error) {
       if (controller.signal.aborted) {
@@ -318,7 +369,11 @@ class HttpMcpClient implements McpClient {
   private parseResponse(body: string, contentType: string, id: number | undefined): unknown {
     if (!contentType.includes("text/event-stream")) return JSON.parse(body) as unknown;
     for (const event of body.split(/\r?\n\r?\n/)) {
-      const data = event.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
+      const data = event
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trimStart())
+        .join("\n");
       if (!data) continue;
       const message = JSON.parse(data) as JsonRpcResponse;
       if (id === undefined || message.id === id) return message;
@@ -327,10 +382,21 @@ class HttpMcpClient implements McpClient {
   }
 }
 
+function createMcpClient(server: ServerConfig, projectCwd: string): McpClient {
+  return "command" in server
+    ? new StdioMcpClient(server, server.cwd ? resolve(projectCwd, server.cwd) : projectCwd)
+    : new HttpMcpClient(server);
+}
+
 function encodeNamePart(value: string) {
   let encoded = "";
   for (const character of value) {
-    encoded += /[a-zA-Z0-9-]/.test(character) ? character : `_x${character.codePointAt(0)!.toString(16)}_`;
+    if (/[a-zA-Z0-9-]/.test(character)) {
+      encoded += character;
+      continue;
+    }
+    const codePoint = character.codePointAt(0);
+    if (codePoint !== undefined) encoded += `_x${codePoint.toString(16)}_`;
   }
   return encoded;
 }
@@ -348,16 +414,102 @@ function truncateForModel(value: string) {
 
 function formatResult(result: Record<string, unknown>) {
   const content = Array.isArray(result.content)
-    ? result.content.map((item) => item && typeof item === "object" && "text" in item
-      ? String((item as { text: unknown }).text) : JSON.stringify(item)).join("\n")
+    ? result.content
+        .map((item) =>
+          item && typeof item === "object" && "text" in item
+            ? String((item as { text: unknown }).text)
+            : JSON.stringify(item),
+        )
+        .join("\n")
     : "";
-  const output = result.structuredContent === undefined ? content || "(MCP tool completed without output)"
-    : `${content}${content ? "\n\n" : ""}Structured result:\n${JSON.stringify(result.structuredContent, null, 2)}`;
+  const output =
+    result.structuredContent === undefined
+      ? content || "(MCP tool completed without output)"
+      : `${content}${content ? "\n\n" : ""}Structured result:\n${JSON.stringify(result.structuredContent, null, 2)}`;
   return truncateForModel(output);
 }
 
 export default function (pi: ExtensionAPI) {
-  const clients: McpClient[] = [];
+  const servers = new Map<string, ManagedServer>();
+
+  const setServerEnabled = async (serverName: string, enabled: boolean) => {
+    const server = servers.get(serverName);
+    if (!server) throw new Error(`Unknown MCP server: ${serverName}`);
+    if (server.enabled === enabled) return;
+
+    if (enabled) {
+      const client = createMcpClient(server.config, server.cwd);
+      try {
+        await client.connect();
+        const availableTools = new Set((await client.listTools()).map((tool) => toolName(serverName, tool.name)));
+        if (server.toolNames.some((name) => !availableTools.has(name))) {
+          throw new Error("server tool list changed; reload Pi to refresh MCP tools");
+        }
+        server.client = client;
+        server.enabled = true;
+        pi.setActiveTools([...new Set([...pi.getActiveTools(), ...server.toolNames])]);
+      } catch (error) {
+        client.close();
+        throw error;
+      }
+      return;
+    }
+
+    server.client?.close();
+    server.client = undefined;
+    server.enabled = false;
+    const disabledTools = new Set(server.toolNames);
+    pi.setActiveTools(pi.getActiveTools().filter((name) => !disabledTools.has(name)));
+  };
+
+  pi.registerCommand("mcp", {
+    description: "List, enable, or disable MCP servers",
+    getArgumentCompletions: (prefix) => {
+      const [action = "", name = ""] = prefix.trimStart().split(/\s+/, 2);
+      if (!prefix.includes(" "))
+        return ["list", "enable", "disable", "toggle"]
+          .filter((value) => value.startsWith(action))
+          .map((value) => ({ value, label: value }));
+      if (!["enable", "disable", "toggle"].includes(action)) return null;
+      return [...servers.keys()].filter((value) => value.startsWith(name)).map((value) => ({ value, label: value }));
+    },
+    handler: async (args, ctx) => {
+      const [action, ...rest] = args.trim().split(/\s+/).filter(Boolean);
+      if (!action) {
+        if (!ctx.hasUI) {
+          console.error(
+            `[mcp-bridge] ${[...servers].map(([name, server]) => `${server.enabled ? "enabled" : "disabled"} ${name}`).join(", ") || "No MCP servers configured."}`,
+          );
+          return;
+        }
+        const options = [...servers].map(([name, server]) => `${server.enabled ? "✓" : "○"} ${name}`);
+        const selected = await ctx.ui.select("MCP servers (select to toggle)", options);
+        if (!selected) return;
+        const index = options.indexOf(selected);
+        const entry = [...servers][index];
+        if (!entry) return;
+        const [serverName, server] = entry;
+        await setServerEnabled(serverName, !server.enabled);
+        ctx.ui.notify(`MCP server ${serverName} ${server.enabled ? "enabled" : "disabled"}.`, "info");
+        return;
+      }
+      if (action === "list") {
+        const text =
+          [...servers].map(([name, server]) => `${server.enabled ? "enabled" : "disabled"} ${name}`).join("\n") ||
+          "No MCP servers configured.";
+        if (ctx.hasUI) ctx.ui.notify(text, "info");
+        else console.error(`[mcp-bridge] ${text}`);
+        return;
+      }
+      if (!["enable", "disable", "toggle"].includes(action) || rest.length !== 1) {
+        throw new Error("Usage: /mcp [list|enable <server>|disable <server>|toggle <server>]");
+      }
+      const server = servers.get(rest[0]);
+      if (!server) throw new Error(`Unknown MCP server: ${rest[0]}`);
+      await setServerEnabled(rest[0], action === "toggle" ? !server.enabled : action === "enable");
+      if (ctx.hasUI) ctx.ui.notify(`MCP server ${rest[0]} ${server.enabled ? "enabled" : "disabled"}.`, "info");
+    },
+  });
 
   pi.on("session_start", async (_event, ctx) => {
     if (!ctx.isProjectTrusted()) {
@@ -381,21 +533,28 @@ export default function (pi: ExtensionAPI) {
     for (const [serverName, rawServer] of Object.entries(config.mcpServers ?? {})) {
       let client: McpClient | undefined;
       try {
-        if (!serverName || serverName.length > MAX_NAME_LENGTH) throw new Error(`server name must be 1-${MAX_NAME_LENGTH} characters`);
+        if (!serverName || serverName.length > MAX_NAME_LENGTH)
+          throw new Error(`server name must be 1-${MAX_NAME_LENGTH} characters`);
         const server = parseServerConfig(rawServer);
-        client = "command" in server
-          ? new StdioMcpClient(server, server.cwd ? resolve(ctx.cwd, server.cwd) : ctx.cwd)
-          : new HttpMcpClient(server);
-        await client.connect();        const connectedClient = client;
+        client = createMcpClient(server, ctx.cwd);
+        await client.connect();
+        const connectedClient = client;
         const tools = await connectedClient.listTools();
         const definitions = tools.map((tool) => {
-          if (tool.name.length > MAX_NAME_LENGTH) throw new Error(`tool name ${tool.name} exceeds ${MAX_NAME_LENGTH} characters`);
+          if (tool.name.length > MAX_NAME_LENGTH)
+            throw new Error(`tool name ${tool.name} exceeds ${MAX_NAME_LENGTH} characters`);
           const name = toolName(serverName, tool.name);
           if (registeredNames.has(name)) throw new Error(`tool name collision: ${name}`);
           registeredNames.add(name);
           return { tool, name };
         });
-        clients.push(connectedClient);
+        const managed: ManagedServer = {
+          config: server,
+          cwd: ctx.cwd,
+          client: connectedClient,
+          toolNames: definitions.map((definition) => definition.name),
+          enabled: true,
+        };
         for (const { tool, name } of definitions) {
           pi.registerTool({
             name,
@@ -403,7 +562,8 @@ export default function (pi: ExtensionAPI) {
             description: tool.description ?? `Call ${tool.name} on MCP server ${serverName}.`,
             parameters: Type.Unsafe(tool.inputSchema),
             async execute(_id, args, signal) {
-              const result = await connectedClient.callTool(tool.name, args, signal);
+              if (!managed.enabled || !managed.client) throw new Error(`MCP server ${serverName} is disabled`);
+              const result = await managed.client.callTool(tool.name, args, signal);
               if (!isRecord(result)) throw new Error("MCP server returned an invalid tools/call response");
               const text = formatResult(result);
               if (result.isError) throw new Error(text);
@@ -411,6 +571,7 @@ export default function (pi: ExtensionAPI) {
             },
           });
         }
+        servers.set(serverName, managed);
         console.error(`[mcp-bridge] Connected ${serverName} (${tools.length} tools).`);
       } catch (error) {
         client?.close();
@@ -420,6 +581,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", () => {
-    clients.splice(0).forEach((client) => client.close());
+    for (const server of servers.values()) server.client?.close();
+    servers.clear();
   });
 }

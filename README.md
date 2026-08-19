@@ -18,6 +18,16 @@ pi install /Volumes/Work/Repositories/github-nicbet/pi-mcp-extension
 
 Restart Pi after installation.
 
+## Development
+
+Install dependencies with `bun install`. The complete local quality gate is:
+
+```bash
+bun run check
+```
+
+Individual targets are `bun run format`, `bun run format:check`, `bun run lint`, `bun run typecheck`, and `bun run test`.
+
 ## Configuration
 
 Create `.mcp.json` in a trusted project. If it contains credentials, add `.mcp.json` to that project's `.gitignore` before adding it:
@@ -58,3 +68,7 @@ Treat `.mcp.json` as executable project configuration: commands declared there r
 `env` remains the portable configuration mechanism. Because it can contain credentials, do not commit a secret-bearing `.mcp.json`; the extension package's own `.gitignore` cannot protect a consuming project's repository. As an optional hardening measure, `inheritEnv` forwards only named existing environment variables rather than every credential available to Pi. Child servers otherwise receive a minimal environment (`PATH`, required Windows system variables, and `env`). Server stderr is consumed but not forwarded to Pi logs. MCP stdout messages and tool output are bounded to prevent a server from exhausting memory or model context.
 
 Both stdio and Streamable HTTP are supported. HTTP uses configured headers directly, so bearer tokens work through `headers`, but interactive OAuth discovery, login, and refresh flows are not implemented.
+
+## Managing servers
+
+Use `/mcp` to open a server menu; selecting a server toggles it. You can also use `/mcp list`, `/mcp enable <server>`, `/mcp disable <server>`, or `/mcp toggle <server>`. Disabling a server removes its tools from Pi and closes its connection or stdio process. Re-enabling reconnects it and restores its previously registered tools.
