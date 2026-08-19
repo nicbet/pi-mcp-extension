@@ -1,0 +1,15 @@
+{
+  "name": "@nicbet/pi-mcp-extension",
+  "version": "0.1.0",
+  "description": "Expose stdio MCP servers configured in .mcp.json as Pi tools",
+  "license": "MIT",
+  "type": "module",
+  "keywords": ["pi-package", "pi", "mcp", "model-context-protocol"],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "pi": {
+    "extensions": ["./index.ts"]
+  }
+}
