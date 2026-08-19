@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.2] - 2026-08-19
+
+### Fixed
+
+- Replace a machine-specific local-install path in the README with a generic placeholder.
+
 ## [0.1.1] - 2026-08-19
 
 ### Fixed

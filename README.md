@@ -13,7 +13,7 @@ pi install git:github.com/nicbet/pi-mcp-extension
 For local development:
 
 ```bash
-pi install /Volumes/Work/Repositories/github-nicbet/pi-mcp-extension
+pi install /path/to/pi-mcp-extension
 ```
 
 Restart Pi after installation.
