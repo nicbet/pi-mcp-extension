@@ -92,6 +92,27 @@ test("loads stdio tools and /mcp disables then reconnects a server", async () =>
   }
 });
 
+test("rejects ambiguous server transport configuration", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-mcp-test-"));
+  const pi = createPi();
+  extension(pi as any);
+  try {
+    await writeFile(
+      join(cwd, ".mcp.json"),
+      JSON.stringify({
+        mcpServers: {
+          invalid: { command: "node", url: "https://mcp.example.com/mcp" },
+        },
+      }),
+    );
+    await start(pi, cwd);
+    expect(pi.tools).toEqual([]);
+  } finally {
+    await stop(pi);
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("loads Streamable HTTP tools and forwards bearer authorization", async () => {
   let authorization = "";
   const server = Bun.serve({
