@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.3] - 2026-08-20
+
+### Fixed
+
+- Forward `HOME` (and `USERPROFILE` on Windows) to MCP child processes so tools like git can find their global configuration.
+
 ## [0.1.2] - 2026-08-19
 
 ### Fixed

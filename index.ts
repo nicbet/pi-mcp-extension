@@ -97,8 +97,9 @@ function parseServerConfig(value: unknown): ServerConfig {
 function childEnvironment(server: StdioServerConfig): Record<string, string> {
   // Do not pass all of Pi's ambient credentials to arbitrary MCP processes.
   const env: Record<string, string> = { PATH: process.env.PATH ?? "" };
+  if (process.env.HOME) env.HOME = process.env.HOME;
   if (process.platform === "win32") {
-    for (const name of ["SystemRoot", "WINDIR", "ComSpec", "PATHEXT"]) {
+    for (const name of ["SystemRoot", "WINDIR", "ComSpec", "PATHEXT", "USERPROFILE"]) {
       if (process.env[name]) env[name] = process.env[name];
     }
   }
