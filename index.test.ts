@@ -131,6 +131,26 @@ test("rejects ambiguous server transport configuration", async () => {
   }
 });
 
+test("reports failed servers in /mcp list", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-mcp-test-"));
+  const pi = createPi();
+  const originalError = console.error;
+  const errors: unknown[][] = [];
+  console.error = (...args: unknown[]) => errors.push(args);
+  extension(pi as any);
+  try {
+    await writeFile(join(cwd, ".mcp.json"), JSON.stringify({ mcpServers: { remote: { url: "http://127.0.0.1:1" } } }));
+    await start(pi, cwd);
+    await pi.commands.get("mcp").handler("list", { hasUI: false });
+
+    expect(String(errors.at(-1)?.[0])).toContain("failed remote");
+  } finally {
+    console.error = originalError;
+    await stop(pi);
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("loads Streamable HTTP tools and forwards bearer authorization", async () => {
   let authorization = "";
   const server = Bun.serve({

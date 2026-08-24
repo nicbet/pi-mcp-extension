@@ -71,4 +71,4 @@ Both stdio and Streamable HTTP are supported. HTTP uses configured headers direc
 
 ## Managing servers
 
-Use `/mcp` to open a server menu; selecting a server toggles it. You can also use `/mcp list`, `/mcp enable <server>`, `/mcp disable <server>`, or `/mcp toggle <server>`. Disabling a server removes its tools from Pi and closes its connection or stdio process. Re-enabling reconnects it and restores its previously registered tools.
+Use `/mcp` to open a server menu; selecting a server toggles it. You can also use `/mcp list`, `/mcp enable <server>`, `/mcp disable <server>`, or `/mcp toggle <server>`. Disabling a server removes its tools from Pi and closes its connection or stdio process. Re-enabling reconnects it and restores its previously registered tools. Servers that fail during startup remain visible as `failed` entries, including the error, and `/mcp enable <server>` retries a parsed configuration.

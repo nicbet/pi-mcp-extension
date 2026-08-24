@@ -28,11 +28,14 @@ type McpClient = {
   close(): void;
 };
 type ManagedServer = {
-  config: ServerConfig;
+  config?: ServerConfig;
   cwd: string;
   client?: McpClient;
   toolNames: string[];
+  toolsRegistered: boolean;
   enabled: boolean;
+  status: "enabled" | "disabled" | "failed";
+  error?: string;
 };
 type McpConfig = { mcpServers?: Record<string, unknown> };
 type McpTool = { name: string; description?: string; inputSchema: Record<string, unknown> };
@@ -432,6 +435,36 @@ function formatResult(result: Record<string, unknown>) {
 
 export default function (pi: ExtensionAPI) {
   const servers = new Map<string, ManagedServer>();
+  const registeredNames = new Set<string>();
+
+  const registerServerTools = (serverName: string, managed: ManagedServer, tools: McpTool[]) => {
+    const definitions = tools.map((tool) => {
+      if (tool.name.length > MAX_NAME_LENGTH)
+        throw new Error(`tool name ${tool.name} exceeds ${MAX_NAME_LENGTH} characters`);
+      const name = toolName(serverName, tool.name);
+      if (registeredNames.has(name)) throw new Error(`tool name collision: ${name}`);
+      registeredNames.add(name);
+      return { tool, name };
+    });
+    managed.toolNames = definitions.map((definition) => definition.name);
+    for (const { tool, name } of definitions) {
+      pi.registerTool({
+        name,
+        label: `${serverName}: ${tool.name}`,
+        description: tool.description ?? `Call ${tool.name} on MCP server ${serverName}.`,
+        parameters: Type.Unsafe(tool.inputSchema),
+        async execute(_id, args, signal) {
+          if (!managed.enabled || !managed.client) throw new Error(`MCP server ${serverName} is disabled`);
+          const result = await managed.client.callTool(tool.name, args, signal);
+          if (!isRecord(result)) throw new Error("MCP server returned an invalid tools/call response");
+          const text = formatResult(result);
+          if (result.isError) throw new Error(text);
+          return { content: [{ type: "text", text }], details: { server: serverName, tool: tool.name } };
+        },
+      });
+    }
+    managed.toolsRegistered = true;
+  };
 
   const setServerEnabled = async (serverName: string, enabled: boolean) => {
     const server = servers.get(serverName);
@@ -439,18 +472,35 @@ export default function (pi: ExtensionAPI) {
     if (server.enabled === enabled) return;
 
     if (enabled) {
-      const client = createMcpClient(server.config, server.cwd);
+      const config = server.config;
+      if (!config)
+        throw new Error(`MCP server ${serverName} cannot be retried; reload Pi to refresh its configuration`);
+      const client = createMcpClient(config, server.cwd);
       try {
         await client.connect();
-        const availableTools = new Set((await client.listTools()).map((tool) => toolName(serverName, tool.name)));
-        if (server.toolNames.some((name) => !availableTools.has(name))) {
-          throw new Error("server tool list changed; reload Pi to refresh MCP tools");
+        const tools = await client.listTools();
+        if (server.toolsRegistered) {
+          const availableTools = new Set(tools.map((tool) => toolName(serverName, tool.name)));
+          if (
+            availableTools.size !== server.toolNames.length ||
+            server.toolNames.some((name) => !availableTools.has(name))
+          ) {
+            throw new Error("server tool list changed; reload Pi to refresh MCP tools");
+          }
+        } else {
+          registerServerTools(serverName, server, tools);
         }
         server.client = client;
         server.enabled = true;
+        server.status = "enabled";
+        server.error = undefined;
         pi.setActiveTools([...new Set([...pi.getActiveTools(), ...server.toolNames])]);
       } catch (error) {
         client.close();
+        server.client = undefined;
+        server.enabled = false;
+        server.status = "failed";
+        server.error = String(error);
         throw error;
       }
       return;
@@ -459,9 +509,14 @@ export default function (pi: ExtensionAPI) {
     server.client?.close();
     server.client = undefined;
     server.enabled = false;
+    server.status = "disabled";
+    server.error = undefined;
     const disabledTools = new Set(server.toolNames);
     pi.setActiveTools(pi.getActiveTools().filter((name) => !disabledTools.has(name)));
   };
+
+  const serverStatus = ([name, server]: [string, ManagedServer]) =>
+    server.status === "failed" ? `failed ${name}: ${server.error ?? "unknown error"}` : `${server.status} ${name}`;
 
   pi.registerCommand("mcp", {
     description: "List, enable, or disable MCP servers",
@@ -478,12 +533,12 @@ export default function (pi: ExtensionAPI) {
       const [action, ...rest] = args.trim().split(/\s+/).filter(Boolean);
       if (!action) {
         if (!ctx.hasUI) {
-          console.error(
-            `[mcp-bridge] ${[...servers].map(([name, server]) => `${server.enabled ? "enabled" : "disabled"} ${name}`).join(", ") || "No MCP servers configured."}`,
-          );
+          console.error(`[mcp-bridge] ${[...servers].map(serverStatus).join("\n") || "No MCP servers configured."}`);
           return;
         }
-        const options = [...servers].map(([name, server]) => `${server.enabled ? "✓" : "○"} ${name}`);
+        const options = [...servers].map(
+          ([name, server]) => `${server.status === "enabled" ? "✓" : server.status === "failed" ? "✗" : "○"} ${name}`,
+        );
         const selected = await ctx.ui.select("MCP servers (select to toggle)", options);
         if (!selected) return;
         const index = options.indexOf(selected);
@@ -495,9 +550,7 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       if (action === "list") {
-        const text =
-          [...servers].map(([name, server]) => `${server.enabled ? "enabled" : "disabled"} ${name}`).join("\n") ||
-          "No MCP servers configured.";
+        const text = [...servers].map(serverStatus).join("\n") || "No MCP servers configured.";
         if (ctx.hasUI) ctx.ui.notify(text, "info");
         else console.error(`[mcp-bridge] ${text}`);
         return;
@@ -508,7 +561,7 @@ export default function (pi: ExtensionAPI) {
       const server = servers.get(rest[0]);
       if (!server) throw new Error(`Unknown MCP server: ${rest[0]}`);
       await setServerEnabled(rest[0], action === "toggle" ? !server.enabled : action === "enable");
-      if (ctx.hasUI) ctx.ui.notify(`MCP server ${rest[0]} ${server.enabled ? "enabled" : "disabled"}.`, "info");
+      if (ctx.hasUI) ctx.ui.notify(`MCP server ${rest[0]} ${server.status}.`, "info");
     },
   });
 
@@ -532,52 +585,49 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    const registeredNames = new Set(pi.getAllTools().map((tool) => tool.name));
+    registeredNames.clear();
+    for (const tool of pi.getAllTools()) registeredNames.add(tool.name);
     for (const [serverName, rawServer] of Object.entries(config.mcpServers ?? {})) {
       let client: McpClient | undefined;
+      let managed: ManagedServer | undefined;
       try {
         if (!serverName || serverName.length > MAX_NAME_LENGTH)
           throw new Error(`server name must be 1-${MAX_NAME_LENGTH} characters`);
         const server = parseServerConfig(rawServer);
-        client = createMcpClient(server, ctx.cwd);
-        await client.connect();
-        const connectedClient = client;
-        const tools = await connectedClient.listTools();
-        const definitions = tools.map((tool) => {
-          if (tool.name.length > MAX_NAME_LENGTH)
-            throw new Error(`tool name ${tool.name} exceeds ${MAX_NAME_LENGTH} characters`);
-          const name = toolName(serverName, tool.name);
-          if (registeredNames.has(name)) throw new Error(`tool name collision: ${name}`);
-          registeredNames.add(name);
-          return { tool, name };
-        });
-        const managed: ManagedServer = {
+        managed = {
           config: server,
           cwd: ctx.cwd,
-          client: connectedClient,
-          toolNames: definitions.map((definition) => definition.name),
-          enabled: true,
+          toolNames: [],
+          toolsRegistered: false,
+          enabled: false,
+          status: "disabled",
         };
-        for (const { tool, name } of definitions) {
-          pi.registerTool({
-            name,
-            label: `${serverName}: ${tool.name}`,
-            description: tool.description ?? `Call ${tool.name} on MCP server ${serverName}.`,
-            parameters: Type.Unsafe(tool.inputSchema),
-            async execute(_id, args, signal) {
-              if (!managed.enabled || !managed.client) throw new Error(`MCP server ${serverName} is disabled`);
-              const result = await managed.client.callTool(tool.name, args, signal);
-              if (!isRecord(result)) throw new Error("MCP server returned an invalid tools/call response");
-              const text = formatResult(result);
-              if (result.isError) throw new Error(text);
-              return { content: [{ type: "text", text }], details: { server: serverName, tool: tool.name } };
-            },
-          });
-        }
         servers.set(serverName, managed);
+        client = createMcpClient(server, ctx.cwd);
+        await client.connect();
+        const tools = await client.listTools();
+        managed.client = client;
+        registerServerTools(serverName, managed, tools);
+        managed.enabled = true;
+        managed.status = "enabled";
         console.error(`[mcp-bridge] Connected ${serverName} (${tools.length} tools).`);
       } catch (error) {
         client?.close();
+        if (managed) {
+          managed.client = undefined;
+          managed.enabled = false;
+          managed.status = "failed";
+          managed.error = String(error);
+        } else if (serverName) {
+          servers.set(serverName, {
+            cwd: ctx.cwd,
+            toolNames: [],
+            toolsRegistered: false,
+            enabled: false,
+            status: "failed",
+            error: String(error),
+          });
+        }
         console.error(`[mcp-bridge] Failed to connect ${serverName}: ${String(error)}`);
       }
     }
